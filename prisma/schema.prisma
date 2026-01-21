@@ -1,0 +1,175 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RunStatus {
+  SUBMITTED
+  VALIDATING
+  VERIFIED
+  REJECTED
+  ONCHAIN_COMMITTED
+}
+
+enum EventParticipationStatus {
+  JOINED
+  COMPLETED
+  REJECTED
+}
+
+enum RejectReason {
+  ERR_DISTANCE_SHORT
+  ERR_PACE_IMPOSSIBLE
+  ERR_DURATION_SHORT
+  ERR_TIMESTAMP_INVALID
+  ERR_NO_DEVICE_ATTESTATION
+  ERR_NOT_ELIGIBLE
+  ERR_EVENT_CLOSED
+  ERR_ALREADY_COMPLETED
+}
+
+model User {
+  id                   String   @id @default(cuid())
+  walletAddress        String   @unique @db.VarChar(42)
+  profileTokenId       BigInt?
+  profileMintTxHash    String?  @db.VarChar(66)
+  profileMintedAt      DateTime?
+  exp                  Int      @default(0)
+  tier                 Int      @default(0)
+  totalDistanceMeters  Int      @default(0)
+  runCount             Int      @default(0)
+  verifiedRunCount     Int      @default(0)
+  lastOnchainSyncAt    DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  runs                Run[]
+  eventParticipations EventParticipation[]
+  achievements        Achievement[]
+  authNonces          AuthNonce[]
+}
+
+model AuthNonce {
+  id            String   @id @default(cuid())
+  userId        String?
+  walletAddress String   @db.VarChar(42)
+  nonce         String   @unique
+  issuedAt      DateTime @default(now())
+  expiresAt     DateTime
+  usedAt        DateTime?
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([walletAddress])
+}
+
+model Run {
+  id                 String     @id @default(cuid())
+  userId             String
+  status             RunStatus  @default(SUBMITTED)
+  distanceMeters     Int
+  durationSeconds    Int
+  startTime          DateTime
+  endTime            DateTime
+  deviceHash         String?    @db.VarChar(128)
+  avgPaceSeconds     Int?
+  submittedAt        DateTime   @default(now())
+  validatedAt        DateTime?
+  verifiedAt         DateTime?
+  rejectedAt         DateTime?
+  onchainCommittedAt DateTime?
+  reasonCode         RejectReason?
+  validatorVersion   String?    @db.VarChar(32)
+  rulesetHash        String?    @db.VarChar(66)
+  onchainTxHash      String?    @db.VarChar(66)
+
+  user                     User               @relation(fields: [userId], references: [id])
+  statusHistory            RunStatusHistory[]
+  achievements             Achievement[]
+  completionParticipations EventParticipation[] @relation("CompletionRun")
+
+  @@index([userId, status])
+  @@index([submittedAt])
+}
+
+model RunStatusHistory {
+  id         String        @id @default(cuid())
+  runId      String
+  status     RunStatus
+  reasonCode RejectReason?
+  note       String?       @db.VarChar(255)
+  txHash     String?       @db.VarChar(66)
+  createdAt  DateTime      @default(now())
+
+  run Run @relation(fields: [runId], references: [id])
+
+  @@index([runId, createdAt])
+}
+
+model Event {
+  eventId              Int      @id
+  name                 String
+  minTier              Int
+  minTotalDistanceMeters Int
+  targetDistanceMeters Int
+  expReward            Int
+  startTime            DateTime
+  endTime              DateTime
+  active               Boolean  @default(true)
+  chainId              Int?
+  rulesetHash          String?  @db.VarChar(66)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  participations EventParticipation[]
+  achievements   Achievement[]
+}
+
+model EventParticipation {
+  id                   String                    @id @default(cuid())
+  userId               String
+  eventId              Int
+  status               EventParticipationStatus  @default(JOINED)
+  joinedAt             DateTime                  @default(now())
+  completedAt          DateTime?
+  completionRunId      String?
+  completionReasonCode RejectReason?
+
+  user          User  @relation(fields: [userId], references: [id])
+  event         Event @relation(fields: [eventId], references: [eventId])
+  completionRun Run?  @relation("CompletionRun", fields: [completionRunId], references: [id])
+  achievement   Achievement?
+
+  @@unique([userId, eventId])
+  @@unique([completionRunId])
+  @@index([eventId, status])
+}
+
+model Achievement {
+  id                    String   @id @default(cuid())
+  userId                String
+  eventId               Int
+  runId                 String?
+  participationId       String?  @unique
+  tokenId               BigInt?  @unique
+  mintedAt              DateTime?
+  txHash                String?  @db.VarChar(66)
+  verifiedDistanceMeters Int
+  verifiedAt            DateTime
+  rulesetHash           String   @db.VarChar(66)
+  validatorVersion      String   @db.VarChar(32)
+  chainId               Int?
+  metadataUri           String?
+
+  user          User                 @relation(fields: [userId], references: [id])
+  event         Event                @relation(fields: [eventId], references: [eventId])
+  run           Run?                 @relation(fields: [runId], references: [id])
+  participation EventParticipation? @relation(fields: [participationId], references: [id])
+
+  @@unique([userId, eventId])
+  @@index([eventId])
+}
