@@ -49,7 +49,11 @@ Request:
 ```
 Response:
 ```json
-{ "nonce": "random-string", "expiresAt": "2025-01-12T12:00:00Z" }
+{
+  "nonce": "random-string",
+  "expiresAt": "2025-01-12T12:00:00Z",
+  "message": "RUNERA login\nNonce: random-string"
+}
 ```
 
 ### POST /auth/connect
@@ -76,8 +80,8 @@ Response:
     "verifiedRunCount": 3,
     "profileTokenId": "123"
   },
-  "profileMinted": true,
-  "profileMintTxHash": "0x..."
+  "profileMinted": false,
+  "profileMintTxHash": null
 }
 ```
 

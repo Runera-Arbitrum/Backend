@@ -30,6 +30,7 @@ Create `backend/.env`:
 DATABASE_URL="postgresql://runera_app:password@localhost:5432/runera?schema=public"
 PORT=4000
 CORS_ORIGIN="http://localhost:3000"
+JWT_SECRET="replace-with-a-long-random-string"
 ```
 
 Notes:
