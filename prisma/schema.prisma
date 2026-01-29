@@ -39,10 +39,13 @@ model User {
   profileMintTxHash    String?  @db.VarChar(66)
   profileMintedAt      DateTime?
   exp                  Int      @default(0)
+  level                Int      @default(1)
   tier                 Int      @default(0)
   totalDistanceMeters  Int      @default(0)
+  longestStreakDays    Int      @default(0)
   runCount             Int      @default(0)
   verifiedRunCount     Int      @default(0)
+  onchainNonce         Int      @default(0)
   lastOnchainSyncAt    DateTime?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
@@ -111,7 +114,7 @@ model RunStatusHistory {
 }
 
 model Event {
-  eventId              Int      @id
+  eventId              String   @id @db.VarChar(66)
   name                 String
   minTier              Int
   minTotalDistanceMeters Int
@@ -132,7 +135,7 @@ model Event {
 model EventParticipation {
   id                   String                    @id @default(cuid())
   userId               String
-  eventId              Int
+  eventId              String   @db.VarChar(66)
   status               EventParticipationStatus  @default(JOINED)
   joinedAt             DateTime                  @default(now())
   completedAt          DateTime?
@@ -152,12 +155,14 @@ model EventParticipation {
 model Achievement {
   id                    String   @id @default(cuid())
   userId                String
-  eventId               Int
+  eventId               String   @db.VarChar(66)
   runId                 String?
   participationId       String?  @unique
   tokenId               BigInt?  @unique
   mintedAt              DateTime?
   txHash                String?  @db.VarChar(66)
+  tier                  Int      @default(1)
+  metadataHash          String   @db.VarChar(66)
   verifiedDistanceMeters Int
   verifiedAt            DateTime
   rulesetHash           String   @db.VarChar(66)

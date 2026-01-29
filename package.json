@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
+    "seed:event": "node src/seedEvent.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],

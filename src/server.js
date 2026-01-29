@@ -7,6 +7,12 @@ const jwt = require("jsonwebtoken");
 const { randomBytes } = require("crypto");
 const { verifyMessage } = require("ethers");
 const { prisma } = require("./prisma");
+const {
+  calculateLevel,
+  calculateTier,
+  calculateLongestStreakDays,
+} = require("./utils/levelTier");
+const { signProfileStatsUpdate } = require("./utils/eip712");
 
 dotenv.config();
 
@@ -15,6 +21,13 @@ const PORT = Number(process.env.PORT || 4000);
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const NONCE_TTL_MINUTES = 5;
+const XP_PER_VERIFIED_RUN = Number(process.env.XP_PER_VERIFIED_RUN || 100);
+const API_BASE_URL = process.env.API_BASE_URL || "http://localhost:4000";
+
+const CAN_SIGN_PROFILE =
+  !!process.env.BACKEND_SIGNER_PRIVATE_KEY &&
+  !!process.env.PROFILE_NFT_ADDRESS &&
+  !!process.env.CHAIN_ID;
 
 app.use(cors({ origin: CORS_ORIGIN }));
 app.use(express.json());
@@ -25,6 +38,92 @@ app.get("/health", (_req, res) => {
 
 function isValidWalletAddress(address) {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
+function isValidEventId(eventId) {
+  return /^0x[a-fA-F0-9]{64}$/.test(eventId);
+}
+
+function normalizeWalletAddress(address) {
+  return address.trim().toLowerCase();
+}
+
+async function getUserFromAuthHeader(req) {
+  const authHeader = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  if (!authHeader.startsWith("Bearer ")) {
+    return null;
+  }
+
+  if (!JWT_SECRET) {
+    return null;
+  }
+
+  const token = authHeader.slice(7).trim();
+  if (!token) {
+    return null;
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    if (payload.sub) {
+      return prisma.user.findUnique({ where: { id: String(payload.sub) } });
+    }
+
+    if (payload.walletAddress && isValidWalletAddress(String(payload.walletAddress))) {
+      return prisma.user.findUnique({
+        where: { walletAddress: normalizeWalletAddress(String(payload.walletAddress)) },
+      });
+    }
+
+    return null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function isEventOpen(event, now = new Date()) {
+  if (!event.active) {
+    return false;
+  }
+  if (event.startTime && now < event.startTime) {
+    return false;
+  }
+  if (event.endTime && now > event.endTime) {
+    return false;
+  }
+  return true;
+}
+
+function isEligibleForEvent(user, event, now = new Date()) {
+  if (!user) {
+    return false;
+  }
+  if (user.tier < event.minTier) {
+    return false;
+  }
+  if (user.totalDistanceMeters < event.minTotalDistanceMeters) {
+    return false;
+  }
+  return isEventOpen(event, now);
+}
+
+function getTierName(tier) {
+  switch (tier) {
+    case 5:
+      return "Diamond";
+    case 4:
+      return "Platinum";
+    case 3:
+      return "Gold";
+    case 2:
+      return "Silver";
+    default:
+      return "Bronze";
+  }
 }
 
 function buildLoginMessage(nonce) {
@@ -292,6 +391,7 @@ app.post("/run/submit", async (req, res) => {
 
   const normalizedWallet = payload.walletAddress.toLowerCase();
   const now = new Date();
+  const nowUnix = Math.floor(now.getTime() / 1000);
   const avgPaceSeconds = Math.round(
     payload.durationSeconds / (payload.distanceMeters / 1000),
   );
@@ -330,7 +430,17 @@ app.post("/run/submit", async (req, res) => {
         data: { status: "VALIDATING" },
       });
 
+      let onchainSync = null;
+
       if (validation.status === "VERIFIED") {
+        const updatedExp = user.exp + XP_PER_VERIFIED_RUN;
+        const updatedLevel = calculateLevel(updatedExp);
+        const updatedTier = calculateTier(updatedLevel);
+        const updatedRunCount = user.runCount + 1;
+        const updatedVerifiedRunCount = user.verifiedRunCount + 1;
+        const updatedTotalDistance =
+          user.totalDistanceMeters + payload.distanceMeters;
+
         await tx.run.update({
           where: { id: run.id },
           data: {
@@ -344,6 +454,68 @@ app.post("/run/submit", async (req, res) => {
 
         await tx.runStatusHistory.create({
           data: { runId: run.id, status: "VERIFIED" },
+        });
+
+        const verifiedRuns = await tx.run.findMany({
+          where: {
+            userId: user.id,
+            status: "VERIFIED",
+          },
+          select: { endTime: true },
+        });
+
+        const longestStreakDays = calculateLongestStreakDays(
+          verifiedRuns.map((item) => item.endTime),
+        );
+
+        const achievementCount = await tx.achievement.count({
+          where: { userId: user.id },
+        });
+
+        const statsPayload = {
+          xp: updatedExp,
+          level: updatedLevel,
+          runCount: updatedVerifiedRunCount,
+          achievementCount,
+          totalDistanceMeters: updatedTotalDistance,
+          longestStreakDays,
+          lastUpdated: nowUnix,
+        };
+
+        let nextNonce = user.onchainNonce;
+
+        if (CAN_SIGN_PROFILE) {
+          const deadline = nowUnix + 600;
+          const signature = await signProfileStatsUpdate(
+            user.walletAddress,
+            statsPayload,
+            nextNonce,
+            deadline,
+          );
+
+          onchainSync = {
+            stats: statsPayload,
+            nonce: nextNonce,
+            deadline,
+            signature,
+          };
+
+          nextNonce += 1;
+        }
+
+        await tx.user.update({
+          where: { id: user.id },
+          data: {
+            exp: updatedExp,
+            level: updatedLevel,
+            tier: updatedTier,
+            runCount: updatedRunCount,
+            verifiedRunCount: updatedVerifiedRunCount,
+            totalDistanceMeters: updatedTotalDistance,
+            longestStreakDays,
+            onchainNonce: nextNonce,
+            lastOnchainSyncAt: CAN_SIGN_PROFILE ? now : user.lastOnchainSyncAt,
+          },
         });
       } else {
         await tx.run.update({
@@ -370,6 +542,7 @@ app.post("/run/submit", async (req, res) => {
         runId: run.id,
         status: validation.status,
         reasonCode: validation.reasonCode,
+        onchainSync,
       };
     });
 
@@ -383,6 +556,335 @@ app.post("/run/submit", async (req, res) => {
       },
     });
   }
+});
+
+app.get("/runs", async (req, res) => {
+  const walletAddress =
+    typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+  const limitParam =
+    typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : 20;
+
+  let user = await getUserFromAuthHeader(req);
+
+  if (!user) {
+    if (!walletAddress) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "walletAddress is required",
+        },
+      });
+    }
+
+    if (!isValidWalletAddress(walletAddress)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "walletAddress must be a valid 0x address",
+        },
+      });
+    }
+
+    user = await prisma.user.findUnique({
+      where: { walletAddress: normalizeWalletAddress(walletAddress) },
+    });
+  }
+
+  if (!user) {
+    return res.json([]);
+  }
+
+  const runs = await prisma.run.findMany({
+    where: { userId: user.id },
+    orderBy: { startTime: "desc" },
+    take: Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 20,
+  });
+
+  const response = runs.map((run) => {
+    const distanceKm = run.distanceMeters / 1000;
+    const avgPaceSeconds =
+      run.avgPaceSeconds ??
+      (distanceKm > 0 ? Math.round(run.durationSeconds / distanceKm) : null);
+
+    return {
+      runId: run.id,
+      status: run.status,
+      reasonCode: run.reasonCode,
+      distanceMeters: run.distanceMeters,
+      durationSeconds: run.durationSeconds,
+      avgPaceSeconds,
+      startTime: run.startTime,
+      endTime: run.endTime,
+      submittedAt: run.submittedAt,
+      validatedAt: run.validatedAt,
+    };
+  });
+
+  return res.json(response);
+});
+
+app.get("/events", async (req, res) => {
+  const walletAddress =
+    typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+
+  let user = await getUserFromAuthHeader(req);
+
+  if (!user && walletAddress) {
+    if (!isValidWalletAddress(walletAddress)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "walletAddress must be a valid 0x address",
+        },
+      });
+    }
+
+    user = await prisma.user.findUnique({
+      where: { walletAddress: normalizeWalletAddress(walletAddress) },
+    });
+  }
+
+  const events = await prisma.event.findMany({
+    orderBy: { startTime: "desc" },
+  });
+
+  let participationMap = new Map();
+  if (user) {
+    const participations = await prisma.eventParticipation.findMany({
+      where: { userId: user.id },
+      select: { eventId: true, status: true },
+    });
+    participationMap = new Map(
+      participations.map((item) => [item.eventId, item.status]),
+    );
+  }
+
+  const now = new Date();
+  const response = events.map((event) => ({
+    eventId: event.eventId,
+    name: event.name,
+    minTier: event.minTier,
+    minTotalDistanceMeters: event.minTotalDistanceMeters,
+    targetDistanceMeters: event.targetDistanceMeters,
+    expReward: event.expReward,
+    startTime: event.startTime,
+    endTime: event.endTime,
+    active: event.active,
+    eligible: user ? isEligibleForEvent(user, event, now) : false,
+    status: user ? participationMap.get(event.eventId) ?? null : null,
+  }));
+
+  return res.json(response);
+});
+
+app.post("/events/:id/join", async (req, res) => {
+  const eventId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const walletAddress = typeof req.body?.walletAddress === "string" ? req.body.walletAddress.trim() : "";
+
+  if (!isValidEventId(eventId)) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_BAD_REQUEST",
+        message: "eventId must be a valid bytes32 hex string",
+      },
+    });
+  }
+
+  let user = await getUserFromAuthHeader(req);
+
+  if (user && walletAddress && normalizeWalletAddress(walletAddress) !== user.walletAddress) {
+    return res.status(403).json({
+      error: {
+        code: "ERR_WALLET_MISMATCH",
+        message: "walletAddress does not match authenticated user",
+      },
+    });
+  }
+
+  if (!user) {
+    if (!walletAddress || !isValidWalletAddress(walletAddress)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "walletAddress must be a valid 0x address",
+        },
+      });
+    }
+
+    user = await prisma.user.upsert({
+      where: { walletAddress: normalizeWalletAddress(walletAddress) },
+      update: {},
+      create: { walletAddress: normalizeWalletAddress(walletAddress) },
+    });
+  }
+
+  const event = await prisma.event.findUnique({ where: { eventId } });
+  if (!event) {
+    return res.status(404).json({
+      error: {
+        code: "ERR_NOT_FOUND",
+        message: "Event not found",
+      },
+    });
+  }
+
+  if (!isEventOpen(event)) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_EVENT_CLOSED",
+        message: "Event is not active",
+      },
+    });
+  }
+
+  if (!isEligibleForEvent(user, event)) {
+    return res.status(403).json({
+      error: {
+        code: "ERR_NOT_ELIGIBLE",
+        message: "User is not eligible for this event",
+      },
+    });
+  }
+
+  const existing = await prisma.eventParticipation.findUnique({
+    where: {
+      userId_eventId: {
+        userId: user.id,
+        eventId,
+      },
+    },
+  });
+
+  if (existing) {
+    if (existing.status === "COMPLETED") {
+      return res.status(409).json({
+        error: {
+          code: "ERR_ALREADY_COMPLETED",
+          message: "Event already completed",
+        },
+      });
+    }
+    return res.json({ eventId, status: existing.status });
+  }
+
+  const participation = await prisma.eventParticipation.create({
+    data: {
+      userId: user.id,
+      eventId,
+    },
+  });
+
+  return res.json({ eventId, status: participation.status });
+});
+
+app.get("/events/:id/status", async (req, res) => {
+  const eventId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+  const walletAddress =
+    typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+
+  if (!isValidEventId(eventId)) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_BAD_REQUEST",
+        message: "eventId must be a valid bytes32 hex string",
+      },
+    });
+  }
+
+  let user = await getUserFromAuthHeader(req);
+
+  if (!user) {
+    if (!walletAddress || !isValidWalletAddress(walletAddress)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "walletAddress must be a valid 0x address",
+        },
+      });
+    }
+
+    user = await prisma.user.findUnique({
+      where: { walletAddress: normalizeWalletAddress(walletAddress) },
+    });
+  }
+
+  if (!user) {
+    return res.status(404).json({
+      error: {
+        code: "ERR_NOT_FOUND",
+        message: "User not found",
+      },
+    });
+  }
+
+  const participation = await prisma.eventParticipation.findUnique({
+    where: {
+      userId_eventId: {
+        userId: user.id,
+        eventId,
+      },
+    },
+  });
+
+  if (!participation) {
+    return res.status(404).json({
+      error: {
+        code: "ERR_NOT_FOUND",
+        message: "Event participation not found",
+      },
+    });
+  }
+
+  return res.json({
+    eventId,
+    status: participation.status,
+    completionRunId: participation.completionRunId,
+    completedAt: participation.completedAt,
+  });
+});
+
+app.get("/profile/:address/metadata", async (req, res) => {
+  const address = typeof req.params.address === "string" ? req.params.address.trim() : "";
+  if (!isValidWalletAddress(address)) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_BAD_REQUEST",
+        message: "address must be a valid 0x address",
+      },
+    });
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { walletAddress: address.toLowerCase() },
+    include: { achievements: true },
+  });
+
+  if (!user) {
+    return res.status(404).json({
+      error: {
+        code: "ERR_NOT_FOUND",
+        message: "User not found",
+      },
+    });
+  }
+
+  return res.json({
+    name: `RUNERA Profile - ${getTierName(user.tier)}`,
+    description: `Level ${user.level} Runner`,
+    image: `${API_BASE_URL}/profile/${address.toLowerCase()}/image`,
+    attributes: [
+      { trait_type: "Tier", value: getTierName(user.tier) },
+      { trait_type: "Level", value: user.level },
+      { trait_type: "XP", value: user.exp },
+      {
+        trait_type: "Total Distance (km)",
+        value: user.totalDistanceMeters / 1000,
+      },
+      { trait_type: "Runs", value: user.runCount },
+      { trait_type: "Longest Streak (days)", value: user.longestStreakDays },
+      { trait_type: "Achievements", value: user.achievements.length },
+    ],
+  });
 });
 
 async function shutdown() {

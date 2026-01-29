@@ -4,6 +4,9 @@ Base path: `/` (no versioning yet)
 Auth: `Authorization: Bearer <token>` for protected endpoints.
 Time: ISO8601 UTC. Units: meters, seconds.
 
+Dev note: For local development without auth, some endpoints accept
+`walletAddress` as a query param or request body to resolve the user.
+
 ## Enums
 
 RunStatus:
@@ -102,7 +105,7 @@ Response:
   "achievements": [
     {
       "achievementId": "cuid",
-      "eventId": 1,
+      "eventId": "0x8c2f6b2c0a9e4e0c6d4d8d0dfb9f5b4a0fd6b99f87d2b1b7d65d8a44f9a4c3a1",
       "eventName": "RUNERA Base Genesis 10K",
       "verifiedAt": "2025-01-12T12:00:00Z",
       "verifiedDistanceMeters": 10240,
@@ -111,7 +114,7 @@ Response:
   ],
   "events": [
     {
-      "eventId": 1,
+      "eventId": "0x8c2f6b2c0a9e4e0c6d4d8d0dfb9f5b4a0fd6b99f87d2b1b7d65d8a44f9a4c3a1",
       "status": "JOINED"
     }
   ]
@@ -141,9 +144,49 @@ Response:
 ```json
 {
   "runId": "cuid",
-  "status": "VALIDATING",
-  "reasonCode": null
+  "status": "VERIFIED",
+  "reasonCode": null,
+  "onchainSync": {
+    "stats": {
+      "xp": 1500,
+      "level": 15,
+      "runCount": 25,
+      "achievementCount": 3,
+      "totalDistanceMeters": 250000,
+      "longestStreakDays": 7,
+      "lastUpdated": 1706464800
+    },
+    "nonce": 5,
+    "deadline": 1706468400,
+    "signature": "0x..."
+  }
 }
+```
+
+### GET /runs
+Auth optional; for local dev pass `walletAddress` query param.
+
+Query:
+```
+?walletAddress=0xabc...def&limit=50
+```
+
+Response:
+```json
+[
+  {
+    "runId": "cuid",
+    "status": "VERIFIED",
+    "reasonCode": null,
+    "distanceMeters": 5240,
+    "durationSeconds": 1800,
+    "avgPaceSeconds": 343,
+    "startTime": "2025-01-12T11:30:00Z",
+    "endTime": "2025-01-12T12:00:00Z",
+    "submittedAt": "2025-01-12T12:00:10Z",
+    "validatedAt": "2025-01-12T12:01:00Z"
+  }
+]
 ```
 
 ### GET /run/{id}/status
@@ -168,11 +211,12 @@ Response:
 
 ### GET /events
 Auth optional (if provided, include eligibility and user status).
+For local dev you can pass `walletAddress` query param.
 Response:
 ```json
 [
   {
-    "eventId": 1,
+    "eventId": "0x8c2f6b2c0a9e4e0c6d4d8d0dfb9f5b4a0fd6b99f87d2b1b7d65d8a44f9a4c3a1",
     "name": "RUNERA Base Genesis 10K",
     "minTier": 1,
     "minTotalDistanceMeters": 20000,
@@ -191,7 +235,7 @@ Response:
 Auth required.
 Response:
 ```json
-{ "eventId": 1, "status": "JOINED" }
+{ "eventId": "0x8c2f6b2c0a9e4e0c6d4d8d0dfb9f5b4a0fd6b99f87d2b1b7d65d8a44f9a4c3a1", "status": "JOINED" }
 ```
 
 ### GET /events/{id}/status
@@ -199,7 +243,7 @@ Auth required.
 Response:
 ```json
 {
-  "eventId": 1,
+  "eventId": "0x8c2f6b2c0a9e4e0c6d4d8d0dfb9f5b4a0fd6b99f87d2b1b7d65d8a44f9a4c3a1",
   "status": "COMPLETED",
   "completionRunId": "cuid",
   "completedAt": "2025-01-12T12:01:00Z"
@@ -230,3 +274,8 @@ Response:
 ### GET /proof/{achievement_id}/card
 Public.
 Response: `image/png` binary, 1200x630.
+
+## Metadata
+
+### GET /profile/{address}/metadata
+Public. Returns ERC metadata JSON for profile NFT.

@@ -22,6 +22,77 @@ npm run dev
 
 Backend will start on `http://localhost:4000`.
 
+## Frontend Team: Clone & Run Backend Locally
+
+Use this when the frontend team needs the backend running on their laptop.
+
+### 1) Clone backend repo
+
+```bash
+git clone <BACKEND_REPO_URL>
+cd backend
+```
+
+### 2) Install dependencies
+
+```bash
+npm install
+```
+
+### 3) Configure environment
+
+```bash
+copy .env.example .env
+```
+
+Fill in `.env` with:
+- Local database URL
+- Latest deployed contract addresses
+- Backend signer private key (the wallet that has BACKEND_SIGNER_ROLE)
+
+Example:
+
+```env
+DATABASE_URL="postgresql://runera_app:runera@localhost:5432/runera?schema=public"
+PORT=4000
+CORS_ORIGIN="http://localhost:3000"
+JWT_SECRET="replace-with-a-long-random-string"
+CHAIN_ID=84532
+RPC_URL="https://sepolia.base.org"
+API_BASE_URL="http://localhost:4000"
+PROFILE_NFT_ADDRESS="0x725d729107C4bC61f3665CE1C813CbcEC7214343"
+ACHIEVEMENT_NFT_ADDRESS="0x6941280D4aaFe1FC8Fe07506B50Aff541a1B8bD9"
+EVENT_REGISTRY_ADDRESS="0xbb426df3f52701CcC82d0C771D6B3Ef5210db471"
+BACKEND_SIGNER_PRIVATE_KEY="0x..."
+XP_PER_VERIFIED_RUN=100
+```
+
+### 4) Database + Prisma
+
+```bash
+npx prisma generate
+npx prisma migrate dev --name init
+```
+
+### 5) Run backend
+
+```bash
+npm run dev
+```
+
+Backend will be available at `http://localhost:4000`.
+
+### 6) Frontend integration
+
+Set frontend env:
+```
+NEXT_PUBLIC_API_URL=http://localhost:4000
+```
+
+Then frontend can:
+- `POST /run/submit` to get `onchainSync`
+- `GET /profile/:address/metadata` for profile NFT metadata
+
 ## Environment Variables
 
 Create `backend/.env`:
@@ -31,6 +102,14 @@ DATABASE_URL="postgresql://runera_app:password@localhost:5432/runera?schema=publ
 PORT=4000
 CORS_ORIGIN="http://localhost:3000"
 JWT_SECRET="replace-with-a-long-random-string"
+CHAIN_ID=84532
+RPC_URL="https://sepolia.base.org"
+API_BASE_URL="http://localhost:4000"
+PROFILE_NFT_ADDRESS="0x..."
+ACHIEVEMENT_NFT_ADDRESS="0x..."
+EVENT_REGISTRY_ADDRESS="0x..."
+BACKEND_SIGNER_PRIVATE_KEY="0x..."
+XP_PER_VERIFIED_RUN=100
 ```
 
 Notes:
@@ -75,6 +154,7 @@ npm run prisma:generate # prisma generate
 
 - `GET /health` -> `{ "status": "ok" }`
 - `POST /run/submit` -> submit a run to the backend
+- `GET /profile/:address/metadata` -> profile NFT metadata JSON
 
 ### POST /run/submit
 
@@ -100,6 +180,11 @@ Response:
 ```
 
 Full API reference is in `backend/API_SPEC.md`.
+
+## Event IDs (bytes32)
+
+Smart contracts expect `eventId` as a `bytes32` hex string (66 chars with 0x prefix).
+If you store events in DB, use the same `0x...` string value.
 
 ## Project Structure
 
