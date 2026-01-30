@@ -369,8 +369,21 @@ function validateRunRules({ distanceMeters, durationSeconds, startTime, endTime,
 
 app.post("/run/submit", async (req, res) => {
   const raw = req.body || {};
+  const authUser = await getUserFromAuthHeader(req);
+  const rawWallet =
+    typeof raw.walletAddress === "string" ? raw.walletAddress.trim() : "";
+
+  if (authUser && rawWallet && normalizeWalletAddress(rawWallet) !== authUser.walletAddress) {
+    return res.status(403).json({
+      error: {
+        code: "ERR_WALLET_MISMATCH",
+        message: "walletAddress does not match authenticated user",
+      },
+    });
+  }
+
   const payload = {
-    walletAddress: typeof raw.walletAddress === "string" ? raw.walletAddress.trim() : "",
+    walletAddress: authUser ? authUser.walletAddress : rawWallet,
     distanceMeters: Number(raw.distanceMeters),
     durationSeconds: Number(raw.durationSeconds),
     startTime: new Date(raw.startTime),
