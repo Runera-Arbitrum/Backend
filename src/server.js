@@ -5,7 +5,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const { randomBytes } = require("crypto");
-const { verifyMessage } = require("ethers");
+const { verifyMessage, JsonRpcProvider, Contract } = require("ethers");
 const { prisma } = require("./prisma");
 const {
   calculateLevel,
@@ -496,8 +496,25 @@ app.post("/run/submit", async (req, res) => {
         };
 
         let nextNonce = user.onchainNonce;
-
+        
+        // Fetch actual on-chain nonce to ensure sync
         if (CAN_SIGN_PROFILE) {
+          try {
+             // Use RPC_URL from env or fallback
+             const rpcUrl = process.env.RPC_URL || "https://sepolia.base.org";
+             const provider = new JsonRpcProvider(rpcUrl);
+             const contract = new Contract(process.env.PROFILE_NFT_ADDRESS, ["function nonces(address) view returns (uint256)"], provider);
+             const onChainNonce = await contract.nonces(user.walletAddress);
+             const chainNonceNum = Number(onChainNonce);
+             
+             if (chainNonceNum !== nextNonce) {
+                console.log(`⚠️ Nonce mismatch for ${user.walletAddress}: DB=${nextNonce}, Chain=${chainNonceNum}. Syncing to Chain.`);
+                nextNonce = chainNonceNum;
+             }
+          } catch (e) {
+             console.warn("⚠️ Failed to fetch on-chain nonce, falling back to DB:", e.message);
+          }
+
           const deadline = nowUnix + 600;
           const signature = await signProfileStatsUpdate(
             user.walletAddress,
