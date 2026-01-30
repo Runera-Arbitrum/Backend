@@ -500,8 +500,8 @@ app.post("/run/submit", async (req, res) => {
         // Fetch actual on-chain nonce to ensure sync
         if (CAN_SIGN_PROFILE) {
           try {
-             // Use RPC_URL from env or fallback
-             const rpcUrl = process.env.RPC_URL || "https://sepolia.base.org";
+             // Use RPC_URL from env or fallback to Alchemy (more reliable than public)
+             const rpcUrl = process.env.RPC_URL || "https://base-sepolia.g.alchemy.com/v2/zLbuFi4TN6im35POeM45p";
              const provider = new JsonRpcProvider(rpcUrl);
              const contract = new Contract(process.env.PROFILE_NFT_ADDRESS, ["function nonces(address) view returns (uint256)"], provider);
              const onChainNonce = await contract.nonces(user.walletAddress);
