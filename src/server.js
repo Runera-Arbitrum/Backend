@@ -5,7 +5,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const jwt = require("jsonwebtoken");
 const { randomBytes } = require("crypto");
-const { verifyMessage, JsonRpcProvider, Contract } = require("ethers");
+const { verifyMessage, JsonRpcProvider, Contract, Wallet, parseEther } = require("ethers");
 const { prisma } = require("./prisma");
 const {
   calculateLevel,
@@ -28,6 +28,19 @@ const CAN_SIGN_PROFILE =
   !!process.env.BACKEND_SIGNER_PRIVATE_KEY &&
   !!process.env.PROFILE_NFT_ADDRESS &&
   !!process.env.CHAIN_ID;
+
+const FAUCET_PRIVATE_KEY =
+  process.env.FAUCET_PRIVATE_KEY || process.env.BACKEND_SIGNER_PRIVATE_KEY || "";
+const FAUCET_RPC_URL =
+  process.env.FAUCET_RPC_URL ||
+  process.env.RPC_URL ||
+  "https://base-sepolia.g.alchemy.com/v2/zLbuFi4TN6im35POeM45p";
+const FAUCET_AMOUNT_ETH = process.env.FAUCET_AMOUNT_ETH || "0.0005";
+const FAUCET_MIN_INTERVAL_MS = Number(
+  process.env.FAUCET_MIN_INTERVAL_MS || 24 * 60 * 60 * 1000,
+);
+const CAN_FUND_FAUCET = !!FAUCET_PRIVATE_KEY;
+const faucetRequestsByWallet = new Map();
 
 app.use(cors({ origin: CORS_ORIGIN }));
 app.use(express.json());
@@ -301,6 +314,79 @@ app.post("/auth/connect", async (req, res) => {
       error: {
         code: "ERR_INTERNAL",
         message: "Authentication failed",
+      },
+    });
+  }
+});
+
+app.post("/faucet/request", async (req, res) => {
+  const walletAddress =
+    typeof req.body?.walletAddress === "string" ? req.body.walletAddress.trim() : "";
+
+  if (!isValidWalletAddress(walletAddress)) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_BAD_REQUEST",
+        message: "walletAddress must be a valid 0x address",
+      },
+    });
+  }
+
+  if (!CAN_FUND_FAUCET) {
+    return res.status(503).json({
+      error: {
+        code: "ERR_FAUCET_DISABLED",
+        message: "Faucet is not configured",
+      },
+    });
+  }
+
+  const normalizedWallet = walletAddress.toLowerCase();
+  const now = Date.now();
+  const existing = faucetRequestsByWallet.get(normalizedWallet);
+
+  if (existing) {
+    const elapsed = now - existing.lastRequestAt;
+    if (elapsed < FAUCET_MIN_INTERVAL_MS) {
+      return res.status(429).json({
+        error: {
+          code: "ERR_FAUCET_RATE_LIMIT",
+          message: "Faucet already used recently",
+          details: {
+            retryAfterMs: FAUCET_MIN_INTERVAL_MS - elapsed,
+          },
+        },
+      });
+    }
+  }
+
+  try {
+    const provider = new JsonRpcProvider(FAUCET_RPC_URL);
+    const signer = new Wallet(FAUCET_PRIVATE_KEY, provider);
+    const amount = parseEther(FAUCET_AMOUNT_ETH);
+
+    const tx = await signer.sendTransaction({
+      to: normalizedWallet,
+      value: amount,
+    });
+
+    faucetRequestsByWallet.set(normalizedWallet, {
+      lastRequestAt: now,
+      lastTxHash: tx.hash,
+    });
+
+    return res.json({
+      success: true,
+      txHash: tx.hash,
+      amountWei: amount.toString(),
+      walletAddress: normalizedWallet,
+    });
+  } catch (error) {
+    console.error("Faucet transfer failed:", error);
+    return res.status(500).json({
+      error: {
+        code: "ERR_FAUCET_FAILED",
+        message: "Failed to send funds from faucet",
       },
     });
   }
