@@ -392,6 +392,109 @@ app.post("/faucet/request", async (req, res) => {
   }
 });
 
+app.post("/profile/gasless-register", async (req, res) => {
+  const raw = req.body || {};
+  const authUser = await getUserFromAuthHeader(req);
+  const rawWallet =
+    typeof raw.walletAddress === "string" ? raw.walletAddress.trim() : "";
+
+  if (authUser && rawWallet && normalizeWalletAddress(rawWallet) !== authUser.walletAddress) {
+    return res.status(403).json({
+      error: {
+        code: "ERR_WALLET_MISMATCH",
+        message: "walletAddress does not match authenticated user",
+      },
+    });
+  }
+
+  const walletAddress = authUser ? authUser.walletAddress : rawWallet;
+
+  if (!isValidWalletAddress(walletAddress)) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_BAD_REQUEST",
+        message: "walletAddress must be a valid 0x address",
+      },
+    });
+  }
+
+  if (!FAUCET_PRIVATE_KEY || !process.env.PROFILE_NFT_ADDRESS) {
+    return res.status(503).json({
+      error: {
+        code: "ERR_GASLESS_DISABLED",
+        message: "Gasless registration is not configured",
+      },
+    });
+  }
+
+  let deadlineValue = null;
+  if (typeof raw.deadline === "number" && Number.isFinite(raw.deadline)) {
+    try {
+      deadlineValue = BigInt(raw.deadline);
+    } catch {
+      deadlineValue = null;
+    }
+  } else if (typeof raw.deadline === "string") {
+    const trimmed = raw.deadline.trim();
+    if (trimmed) {
+      try {
+        deadlineValue = BigInt(trimmed);
+      } catch {
+        deadlineValue = null;
+      }
+    }
+  }
+
+  const signature = typeof raw.signature === "string" ? raw.signature.trim() : "";
+
+  if (!deadlineValue || !signature) {
+    return res.status(400).json({
+      error: {
+        code: "ERR_BAD_REQUEST",
+        message: "deadline and signature are required",
+      },
+    });
+  }
+
+  try {
+    const rpcUrl = process.env.RPC_URL || FAUCET_RPC_URL;
+    const provider = new JsonRpcProvider(rpcUrl);
+    const signer = new Wallet(FAUCET_PRIVATE_KEY, provider);
+    const profileAddress = process.env.PROFILE_NFT_ADDRESS;
+
+    const profileContract = new Contract(
+      profileAddress,
+      ["function registerFor(address user,uint256 deadline,bytes signature) external"],
+      signer,
+    );
+
+    const tx = await profileContract.registerFor(
+      normalizeWalletAddress(walletAddress),
+      deadlineValue,
+      signature,
+    );
+
+    return res.json({
+      success: true,
+      txHash: tx.hash,
+      walletAddress: normalizeWalletAddress(walletAddress),
+      deadline: deadlineValue.toString(),
+    });
+  } catch (error) {
+    console.error("Gasless profile registration failed:", error);
+    return res.status(500).json({
+      error: {
+        code: "ERR_GASLESS_REGISTER_FAILED",
+        message: "Failed to submit gasless profile registration",
+        details: {
+          reason: typeof error === "object" && error !== null && "reason" in error ? error.reason : null,
+          code: typeof error === "object" && error !== null && "code" in error ? error.code : null,
+        },
+      },
+    });
+  }
+});
+
 const MIN_PACE_SECONDS = 180; // 3:00 min/km
 
 function validateRunPayload(payload) {
