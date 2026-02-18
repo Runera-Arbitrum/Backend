@@ -18,7 +18,9 @@ dotenv.config();
 
 const app = express();
 const PORT = Number(process.env.PORT || 4000);
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
+const CORS_ORIGIN = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : ["*"];
 const JWT_SECRET = process.env.JWT_SECRET || "";
 const NONCE_TTL_MINUTES = 5;
 const XP_PER_VERIFIED_RUN = Number(process.env.XP_PER_VERIFIED_RUN || 100);
@@ -42,7 +44,13 @@ const FAUCET_MIN_INTERVAL_MS = Number(
 const CAN_FUND_FAUCET = !!FAUCET_PRIVATE_KEY;
 const faucetRequestsByWallet = new Map();
 
-app.use(cors({ origin: CORS_ORIGIN }));
+app.use(
+  cors({
+    origin: CORS_ORIGIN.length === 1 && CORS_ORIGIN[0] === "*" ? "*" : CORS_ORIGIN,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
@@ -778,332 +786,395 @@ app.post("/run/submit", async (req, res) => {
 });
 
 app.get("/runs", async (req, res) => {
-  const walletAddress =
-    typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
-  const limitParam =
-    typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : 20;
+  try {
+    const walletAddress =
+      typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+    const limitParam =
+      typeof req.query.limit === "string" ? Number.parseInt(req.query.limit, 10) : 20;
 
-  let user = await getUserFromAuthHeader(req);
+    let user = await getUserFromAuthHeader(req);
 
-  if (!user) {
-    if (!walletAddress) {
-      return res.status(400).json({
-        error: {
-          code: "ERR_BAD_REQUEST",
-          message: "walletAddress is required",
-        },
+    if (!user) {
+      if (!walletAddress) {
+        return res.status(400).json({
+          error: {
+            code: "ERR_BAD_REQUEST",
+            message: "walletAddress is required",
+          },
+        });
+      }
+
+      if (!isValidWalletAddress(walletAddress)) {
+        return res.status(400).json({
+          error: {
+            code: "ERR_BAD_REQUEST",
+            message: "walletAddress must be a valid 0x address",
+          },
+        });
+      }
+
+      user = await prisma.user.findUnique({
+        where: { walletAddress: normalizeWalletAddress(walletAddress) },
       });
     }
 
-    if (!isValidWalletAddress(walletAddress)) {
-      return res.status(400).json({
-        error: {
-          code: "ERR_BAD_REQUEST",
-          message: "walletAddress must be a valid 0x address",
-        },
-      });
+    if (!user) {
+      return res.json([]);
     }
 
-    user = await prisma.user.findUnique({
-      where: { walletAddress: normalizeWalletAddress(walletAddress) },
+    const runs = await prisma.run.findMany({
+      where: { userId: user.id },
+      orderBy: { startTime: "desc" },
+      take: Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 20,
+    });
+
+    const response = runs.map((run) => {
+      const distanceKm = run.distanceMeters / 1000;
+      const avgPaceSeconds =
+        run.avgPaceSeconds ??
+        (distanceKm > 0 ? Math.round(run.durationSeconds / distanceKm) : null);
+
+      return {
+        runId: run.id,
+        status: run.status,
+        reasonCode: run.reasonCode,
+        distanceMeters: run.distanceMeters,
+        durationSeconds: run.durationSeconds,
+        avgPaceSeconds,
+        startTime: run.startTime,
+        endTime: run.endTime,
+        submittedAt: run.submittedAt,
+        validatedAt: run.validatedAt,
+      };
+    });
+
+    return res.json(response);
+  } catch (error) {
+    console.error("GET /runs failed:", error);
+    return res.status(500).json({
+      error: {
+        code: "ERR_INTERNAL",
+        message: "Failed to fetch runs",
+      },
     });
   }
-
-  if (!user) {
-    return res.json([]);
-  }
-
-  const runs = await prisma.run.findMany({
-    where: { userId: user.id },
-    orderBy: { startTime: "desc" },
-    take: Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 20,
-  });
-
-  const response = runs.map((run) => {
-    const distanceKm = run.distanceMeters / 1000;
-    const avgPaceSeconds =
-      run.avgPaceSeconds ??
-      (distanceKm > 0 ? Math.round(run.durationSeconds / distanceKm) : null);
-
-    return {
-      runId: run.id,
-      status: run.status,
-      reasonCode: run.reasonCode,
-      distanceMeters: run.distanceMeters,
-      durationSeconds: run.durationSeconds,
-      avgPaceSeconds,
-      startTime: run.startTime,
-      endTime: run.endTime,
-      submittedAt: run.submittedAt,
-      validatedAt: run.validatedAt,
-    };
-  });
-
-  return res.json(response);
 });
 
 app.get("/events", async (req, res) => {
-  const walletAddress =
-    typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+  try {
+    const walletAddress =
+      typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
 
-  let user = await getUserFromAuthHeader(req);
+    let user = await getUserFromAuthHeader(req);
 
-  if (!user && walletAddress) {
-    if (!isValidWalletAddress(walletAddress)) {
-      return res.status(400).json({
-        error: {
-          code: "ERR_BAD_REQUEST",
-          message: "walletAddress must be a valid 0x address",
-        },
+    if (!user && walletAddress) {
+      if (!isValidWalletAddress(walletAddress)) {
+        return res.status(400).json({
+          error: {
+            code: "ERR_BAD_REQUEST",
+            message: "walletAddress must be a valid 0x address",
+          },
+        });
+      }
+
+      user = await prisma.user.findUnique({
+        where: { walletAddress: normalizeWalletAddress(walletAddress) },
       });
     }
 
-    user = await prisma.user.findUnique({
-      where: { walletAddress: normalizeWalletAddress(walletAddress) },
+    const events = await prisma.event.findMany({
+      orderBy: { startTime: "desc" },
+    });
+
+    let participationMap = new Map();
+    if (user) {
+      const participations = await prisma.eventParticipation.findMany({
+        where: { userId: user.id },
+        select: { eventId: true, status: true },
+      });
+      participationMap = new Map(
+        participations.map((item) => [item.eventId, item.status]),
+      );
+    }
+
+    const now = new Date();
+    const response = events.map((event) => ({
+      eventId: event.eventId,
+      name: event.name,
+      minTier: event.minTier,
+      minTotalDistanceMeters: event.minTotalDistanceMeters,
+      targetDistanceMeters: event.targetDistanceMeters,
+      expReward: event.expReward,
+      startTime: event.startTime,
+      endTime: event.endTime,
+      active: event.active,
+      eligible: user ? isEligibleForEvent(user, event, now) : false,
+      status: user ? participationMap.get(event.eventId) ?? null : null,
+    }));
+
+    return res.json(response);
+  } catch (error) {
+    console.error("GET /events failed:", error);
+    return res.status(500).json({
+      error: {
+        code: "ERR_INTERNAL",
+        message: "Failed to fetch events",
+      },
     });
   }
-
-  const events = await prisma.event.findMany({
-    orderBy: { startTime: "desc" },
-  });
-
-  let participationMap = new Map();
-  if (user) {
-    const participations = await prisma.eventParticipation.findMany({
-      where: { userId: user.id },
-      select: { eventId: true, status: true },
-    });
-    participationMap = new Map(
-      participations.map((item) => [item.eventId, item.status]),
-    );
-  }
-
-  const now = new Date();
-  const response = events.map((event) => ({
-    eventId: event.eventId,
-    name: event.name,
-    minTier: event.minTier,
-    minTotalDistanceMeters: event.minTotalDistanceMeters,
-    targetDistanceMeters: event.targetDistanceMeters,
-    expReward: event.expReward,
-    startTime: event.startTime,
-    endTime: event.endTime,
-    active: event.active,
-    eligible: user ? isEligibleForEvent(user, event, now) : false,
-    status: user ? participationMap.get(event.eventId) ?? null : null,
-  }));
-
-  return res.json(response);
 });
 
 app.post("/events/:id/join", async (req, res) => {
-  const eventId = typeof req.params.id === "string" ? req.params.id.trim() : "";
-  const walletAddress = typeof req.body?.walletAddress === "string" ? req.body.walletAddress.trim() : "";
+  try {
+    const eventId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+    const walletAddress = typeof req.body?.walletAddress === "string" ? req.body.walletAddress.trim() : "";
 
-  if (!isValidEventId(eventId)) {
-    return res.status(400).json({
-      error: {
-        code: "ERR_BAD_REQUEST",
-        message: "eventId must be a valid bytes32 hex string",
-      },
-    });
-  }
-
-  let user = await getUserFromAuthHeader(req);
-
-  if (user && walletAddress && normalizeWalletAddress(walletAddress) !== user.walletAddress) {
-    return res.status(403).json({
-      error: {
-        code: "ERR_WALLET_MISMATCH",
-        message: "walletAddress does not match authenticated user",
-      },
-    });
-  }
-
-  if (!user) {
-    if (!walletAddress || !isValidWalletAddress(walletAddress)) {
+    if (!isValidEventId(eventId)) {
       return res.status(400).json({
         error: {
           code: "ERR_BAD_REQUEST",
-          message: "walletAddress must be a valid 0x address",
+          message: "eventId must be a valid bytes32 hex string",
         },
       });
     }
 
-    user = await prisma.user.upsert({
-      where: { walletAddress: normalizeWalletAddress(walletAddress) },
-      update: {},
-      create: { walletAddress: normalizeWalletAddress(walletAddress) },
-    });
-  }
+    let user = await getUserFromAuthHeader(req);
 
-  const event = await prisma.event.findUnique({ where: { eventId } });
-  if (!event) {
-    return res.status(404).json({
-      error: {
-        code: "ERR_NOT_FOUND",
-        message: "Event not found",
+    if (user && walletAddress && normalizeWalletAddress(walletAddress) !== user.walletAddress) {
+      return res.status(403).json({
+        error: {
+          code: "ERR_WALLET_MISMATCH",
+          message: "walletAddress does not match authenticated user",
+        },
+      });
+    }
+
+    if (!user) {
+      if (!walletAddress || !isValidWalletAddress(walletAddress)) {
+        return res.status(400).json({
+          error: {
+            code: "ERR_BAD_REQUEST",
+            message: "walletAddress must be a valid 0x address",
+          },
+        });
+      }
+
+      user = await prisma.user.upsert({
+        where: { walletAddress: normalizeWalletAddress(walletAddress) },
+        update: {},
+        create: { walletAddress: normalizeWalletAddress(walletAddress) },
+      });
+    }
+
+    const event = await prisma.event.findUnique({ where: { eventId } });
+    if (!event) {
+      return res.status(404).json({
+        error: {
+          code: "ERR_NOT_FOUND",
+          message: "Event not found",
+        },
+      });
+    }
+
+    if (!isEventOpen(event)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_EVENT_CLOSED",
+          message: "Event is not active",
+        },
+      });
+    }
+
+    if (!isEligibleForEvent(user, event)) {
+      return res.status(403).json({
+        error: {
+          code: "ERR_NOT_ELIGIBLE",
+          message: "User is not eligible for this event",
+        },
+      });
+    }
+
+    const existing = await prisma.eventParticipation.findUnique({
+      where: {
+        userId_eventId: {
+          userId: user.id,
+          eventId,
+        },
       },
     });
-  }
 
-  if (!isEventOpen(event)) {
-    return res.status(400).json({
-      error: {
-        code: "ERR_EVENT_CLOSED",
-        message: "Event is not active",
-      },
-    });
-  }
+    if (existing) {
+      if (existing.status === "COMPLETED") {
+        return res.status(409).json({
+          error: {
+            code: "ERR_ALREADY_COMPLETED",
+            message: "Event already completed",
+          },
+        });
+      }
+      return res.json({ eventId, status: existing.status });
+    }
 
-  if (!isEligibleForEvent(user, event)) {
-    return res.status(403).json({
-      error: {
-        code: "ERR_NOT_ELIGIBLE",
-        message: "User is not eligible for this event",
-      },
-    });
-  }
-
-  const existing = await prisma.eventParticipation.findUnique({
-    where: {
-      userId_eventId: {
+    const participation = await prisma.eventParticipation.create({
+      data: {
         userId: user.id,
         eventId,
       },
-    },
-  });
+    });
 
-  if (existing) {
-    if (existing.status === "COMPLETED") {
-      return res.status(409).json({
-        error: {
-          code: "ERR_ALREADY_COMPLETED",
-          message: "Event already completed",
-        },
-      });
-    }
-    return res.json({ eventId, status: existing.status });
+    return res.json({ eventId, status: participation.status });
+  } catch (error) {
+    console.error("POST /events/:id/join failed:", error);
+    return res.status(500).json({
+      error: {
+        code: "ERR_INTERNAL",
+        message: "Failed to join event",
+      },
+    });
   }
-
-  const participation = await prisma.eventParticipation.create({
-    data: {
-      userId: user.id,
-      eventId,
-    },
-  });
-
-  return res.json({ eventId, status: participation.status });
 });
 
 app.get("/events/:id/status", async (req, res) => {
-  const eventId = typeof req.params.id === "string" ? req.params.id.trim() : "";
-  const walletAddress =
-    typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
+  try {
+    const eventId = typeof req.params.id === "string" ? req.params.id.trim() : "";
+    const walletAddress =
+      typeof req.query.walletAddress === "string" ? req.query.walletAddress.trim() : "";
 
-  if (!isValidEventId(eventId)) {
-    return res.status(400).json({
-      error: {
-        code: "ERR_BAD_REQUEST",
-        message: "eventId must be a valid bytes32 hex string",
-      },
-    });
-  }
-
-  let user = await getUserFromAuthHeader(req);
-
-  if (!user) {
-    if (!walletAddress || !isValidWalletAddress(walletAddress)) {
+    if (!isValidEventId(eventId)) {
       return res.status(400).json({
         error: {
           code: "ERR_BAD_REQUEST",
-          message: "walletAddress must be a valid 0x address",
+          message: "eventId must be a valid bytes32 hex string",
         },
       });
     }
 
-    user = await prisma.user.findUnique({
-      where: { walletAddress: normalizeWalletAddress(walletAddress) },
-    });
-  }
+    let user = await getUserFromAuthHeader(req);
 
-  if (!user) {
-    return res.status(404).json({
+    if (!user) {
+      if (!walletAddress || !isValidWalletAddress(walletAddress)) {
+        return res.status(400).json({
+          error: {
+            code: "ERR_BAD_REQUEST",
+            message: "walletAddress must be a valid 0x address",
+          },
+        });
+      }
+
+      user = await prisma.user.findUnique({
+        where: { walletAddress: normalizeWalletAddress(walletAddress) },
+      });
+    }
+
+    if (!user) {
+      return res.status(404).json({
+        error: {
+          code: "ERR_NOT_FOUND",
+          message: "User not found",
+        },
+      });
+    }
+
+    const participation = await prisma.eventParticipation.findUnique({
+      where: {
+        userId_eventId: {
+          userId: user.id,
+          eventId,
+        },
+      },
+    });
+
+    if (!participation) {
+      return res.status(404).json({
+        error: {
+          code: "ERR_NOT_FOUND",
+          message: "Event participation not found",
+        },
+      });
+    }
+
+    return res.json({
+      eventId,
+      status: participation.status,
+      completionRunId: participation.completionRunId,
+      completedAt: participation.completedAt,
+    });
+  } catch (error) {
+    console.error("GET /events/:id/status failed:", error);
+    return res.status(500).json({
       error: {
-        code: "ERR_NOT_FOUND",
-        message: "User not found",
+        code: "ERR_INTERNAL",
+        message: "Failed to fetch event status",
       },
     });
   }
-
-  const participation = await prisma.eventParticipation.findUnique({
-    where: {
-      userId_eventId: {
-        userId: user.id,
-        eventId,
-      },
-    },
-  });
-
-  if (!participation) {
-    return res.status(404).json({
-      error: {
-        code: "ERR_NOT_FOUND",
-        message: "Event participation not found",
-      },
-    });
-  }
-
-  return res.json({
-    eventId,
-    status: participation.status,
-    completionRunId: participation.completionRunId,
-    completedAt: participation.completedAt,
-  });
 });
 
 app.get("/profile/:address/metadata", async (req, res) => {
-  const address = typeof req.params.address === "string" ? req.params.address.trim() : "";
-  if (!isValidWalletAddress(address)) {
-    return res.status(400).json({
+  try {
+    const address = typeof req.params.address === "string" ? req.params.address.trim() : "";
+    if (!isValidWalletAddress(address)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "address must be a valid 0x address",
+        },
+      });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { walletAddress: address.toLowerCase() },
+      include: { achievements: true },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        error: {
+          code: "ERR_NOT_FOUND",
+          message: "User not found",
+        },
+      });
+    }
+
+    return res.json({
+      name: `RUNERA Profile - ${getTierName(user.tier)}`,
+      description: `Level ${user.level} Runner`,
+      image: `${API_BASE_URL}/profile/${address.toLowerCase()}/image`,
+      attributes: [
+        { trait_type: "Tier", value: getTierName(user.tier) },
+        { trait_type: "Level", value: user.level },
+        { trait_type: "XP", value: user.exp },
+        {
+          trait_type: "Total Distance (km)",
+          value: user.totalDistanceMeters / 1000,
+        },
+        { trait_type: "Runs", value: user.runCount },
+        { trait_type: "Longest Streak (days)", value: user.longestStreakDays },
+        { trait_type: "Achievements", value: user.achievements.length },
+      ],
+    });
+  } catch (error) {
+    console.error("GET /profile/:address/metadata failed:", error);
+    return res.status(500).json({
       error: {
-        code: "ERR_BAD_REQUEST",
-        message: "address must be a valid 0x address",
+        code: "ERR_INTERNAL",
+        message: "Failed to fetch profile metadata",
       },
     });
   }
+});
 
-  const user = await prisma.user.findUnique({
-    where: { walletAddress: address.toLowerCase() },
-    include: { achievements: true },
-  });
-
-  if (!user) {
-    return res.status(404).json({
+// Express error-handling middleware (must be after all routes)
+app.use((err, _req, res, _next) => {
+  console.error("Unhandled express error:", err);
+  if (!res.headersSent) {
+    res.status(500).json({
       error: {
-        code: "ERR_NOT_FOUND",
-        message: "User not found",
+        code: "ERR_INTERNAL",
+        message: "Internal server error",
       },
     });
   }
-
-  return res.json({
-    name: `RUNERA Profile - ${getTierName(user.tier)}`,
-    description: `Level ${user.level} Runner`,
-    image: `${API_BASE_URL}/profile/${address.toLowerCase()}/image`,
-    attributes: [
-      { trait_type: "Tier", value: getTierName(user.tier) },
-      { trait_type: "Level", value: user.level },
-      { trait_type: "XP", value: user.exp },
-      {
-        trait_type: "Total Distance (km)",
-        value: user.totalDistanceMeters / 1000,
-      },
-      { trait_type: "Runs", value: user.runCount },
-      { trait_type: "Longest Streak (days)", value: user.longestStreakDays },
-      { trait_type: "Achievements", value: user.achievements.length },
-    ],
-  });
 });
 
 async function shutdown() {
@@ -1113,6 +1184,16 @@ async function shutdown() {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Prevent server crash on unhandled promise rejections
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+// Prevent server crash on uncaught exceptions (log and keep running)
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+});
 
 app.listen(PORT, () => {
   console.log(`Runera backend listening on port ${PORT}`);
