@@ -1110,6 +1110,10 @@ app.get("/events/:id/status", async (req, res) => {
   }
 });
 
+app.get("/profile/:address", async (req, res) => {
+  res.redirect(301, `/profile/${req.params.address}/metadata`);
+});
+
 app.get("/profile/:address/metadata", async (req, res) => {
   try {
     const address = typeof req.params.address === "string" ? req.params.address.trim() : "";
