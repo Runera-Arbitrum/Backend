@@ -5,7 +5,11 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+<<<<<<< HEAD
    directUrl = env("DIRECT_URL")
+=======
+  directUrl = env("DIRECT_URL")
+>>>>>>> 0d7b8a3ad3616f2bd5bab5dc0bc466f3a6938a5c
 }
 
 enum RunStatus {
