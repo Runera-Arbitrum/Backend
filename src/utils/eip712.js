@@ -46,7 +46,7 @@ async function signProfileStatsUpdate(userAddress, stats, nonce, deadline) {
     level: stats.level,
     runCount: stats.runCount,
     achievementCount: stats.achievementCount,
-    totalDistanceMeters: BigInt(stats.totalDistanceMeters),
+    totalDistanceMeters: BigInt(Math.round(stats.totalDistanceMeters)),
     longestStreakDays: stats.longestStreakDays,
     lastUpdated: BigInt(stats.lastUpdated),
     nonce: BigInt(nonce),

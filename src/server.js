@@ -860,6 +860,103 @@ app.get("/runs", async (req, res) => {
   }
 });
 
+app.post("/events", async (req, res) => {
+  try {
+    const adminSecret = process.env.ADMIN_SECRET;
+    const providedSecret = req.headers["x-admin-secret"];
+
+    if (!adminSecret || providedSecret !== adminSecret) {
+      return res.status(401).json({
+        error: {
+          code: "ERR_UNAUTHORIZED",
+          message: "Invalid or missing admin secret",
+        },
+      });
+    }
+
+    const raw = req.body || {};
+    const eventId = typeof raw.eventId === "string" ? raw.eventId.trim() : "";
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    const minTier = Number(raw.minTier ?? 0);
+    const minTotalDistanceMeters = Number(raw.minTotalDistanceMeters ?? 0);
+    const targetDistanceMeters = Number(raw.targetDistanceMeters ?? 0);
+    const expReward = Number(raw.expReward ?? 0);
+    const startTime = raw.startTime ? new Date(raw.startTime) : null;
+    const endTime = raw.endTime ? new Date(raw.endTime) : null;
+    const active = raw.active !== undefined ? Boolean(raw.active) : true;
+    const chainId = raw.chainId ? Number(raw.chainId) : null;
+
+    if (!isValidEventId(eventId)) {
+      return res.status(400).json({
+        error: {
+          code: "ERR_BAD_REQUEST",
+          message: "eventId must be a valid bytes32 hex string (0x + 64 hex chars)",
+        },
+      });
+    }
+
+    if (!name) {
+      return res.status(400).json({
+        error: { code: "ERR_BAD_REQUEST", message: "name is required" },
+      });
+    }
+
+    if (!Number.isFinite(targetDistanceMeters) || targetDistanceMeters <= 0) {
+      return res.status(400).json({
+        error: { code: "ERR_BAD_REQUEST", message: "targetDistanceMeters must be a positive number" },
+      });
+    }
+
+    if (!startTime || isNaN(startTime.getTime())) {
+      return res.status(400).json({
+        error: { code: "ERR_BAD_REQUEST", message: "startTime must be a valid ISO8601 date" },
+      });
+    }
+
+    if (!endTime || isNaN(endTime.getTime())) {
+      return res.status(400).json({
+        error: { code: "ERR_BAD_REQUEST", message: "endTime must be a valid ISO8601 date" },
+      });
+    }
+
+    if (endTime <= startTime) {
+      return res.status(400).json({
+        error: { code: "ERR_BAD_REQUEST", message: "endTime must be after startTime" },
+      });
+    }
+
+    const event = await prisma.event.create({
+      data: {
+        eventId,
+        name,
+        minTier,
+        minTotalDistanceMeters,
+        targetDistanceMeters,
+        expReward,
+        startTime,
+        endTime,
+        active,
+        chainId,
+      },
+    });
+
+    return res.status(201).json(event);
+  } catch (error) {
+    if (error.code === "P2002") {
+      return res.status(409).json({
+        error: {
+          code: "ERR_CONFLICT",
+          message: "Event with this eventId already exists",
+        },
+      });
+    }
+    console.error("POST /events failed:", error);
+    return res.status(500).json({
+      error: { code: "ERR_INTERNAL", message: "Failed to create event" },
+    });
+  }
+});
+
 app.get("/events", async (req, res) => {
   try {
     const walletAddress =
