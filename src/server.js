@@ -503,7 +503,9 @@ app.post("/profile/gasless-register", async (req, res) => {
   }
 });
 
-const MIN_PACE_SECONDS = 180; // 3:00 min/km
+const MIN_DISTANCE_METERS = 1000;  // minimum 1 km for a valid run
+const MIN_PACE_SECONDS     = 200;  // 3:20 min/km – faster is likely vehicle-assisted
+const MAX_PACE_SECONDS     = 900;  // 15:00 min/km – slower is likely walking / GPS spoof
 
 function validateRunPayload(payload) {
   const errors = [];
@@ -550,6 +552,10 @@ function validateRunRules({ distanceMeters, durationSeconds, startTime, endTime,
     return { status: "REJECTED", reasonCode: "ERR_DISTANCE_SHORT" };
   }
 
+  if (distanceMeters < MIN_DISTANCE_METERS) {
+    return { status: "REJECTED", reasonCode: "ERR_DISTANCE_BELOW_MINIMUM" };
+  }
+
   if (durationSeconds <= 0) {
     return { status: "REJECTED", reasonCode: "ERR_DURATION_SHORT" };
   }
@@ -559,6 +565,10 @@ function validateRunRules({ distanceMeters, durationSeconds, startTime, endTime,
 
   if (paceSeconds < MIN_PACE_SECONDS) {
     return { status: "REJECTED", reasonCode: "ERR_PACE_IMPOSSIBLE" };
+  }
+
+  if (paceSeconds > MAX_PACE_SECONDS) {
+    return { status: "REJECTED", reasonCode: "ERR_PACE_TOO_SLOW" };
   }
 
   return { status: "VERIFIED", reasonCode: null };
